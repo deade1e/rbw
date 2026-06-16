@@ -586,6 +586,7 @@ impl Client {
         let res = ClientRequest::ExchangeRefreshToken(refresh_token)
             .req(self)
             .await?;
+        let res = Self::check_connect_token_res(res).await?;
         let connect_res: ConnectRefreshTokenRes = res.json_with_path().await?;
         Ok(connect_res.access_token)
     }
@@ -594,6 +595,7 @@ impl Client {
         let res = ClientRequest::ExchangeRefreshToken(refresh_token)
             .req(self)
             .await?;
+        let res = Self::check_connect_token_res(res).await?;
         let connect_res: ConnectRefreshTokenRes = res.json_with_path().await?;
         Ok(connect_res.access_token)
     }
