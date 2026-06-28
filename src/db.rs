@@ -190,15 +190,8 @@ pub struct HistoryEntry {
     pub password: String,
 }
 
-// These are markers for type state pattern
-#[derive(Debug, Clone, Eq, PartialEq)]
-pub struct Encrypted;
-
-#[derive(Debug, Clone, Eq, PartialEq)]
-pub struct Decrypted;
-
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Eq, PartialEq)]
-pub struct Entry<State> {
+pub struct Entry {
     pub id: String,
     pub org_id: Option<String>,
     pub folder: Option<String>,
@@ -210,19 +203,15 @@ pub struct Entry<State> {
     pub history: Vec<HistoryEntry>,
     pub key: Option<String>,
     pub master_password_reprompt: crate::api::CipherRepromptType,
-    #[serde(skip)]
-    pub _state: std::marker::PhantomData<State>,
 }
 
 // Most impl fn don't belong here. I am talking of display ones, but looking to relocate them
 // later in the refactor process.
-impl<T> Entry<T> {
+impl Entry {
     pub fn master_password_reprompt(&self) -> bool {
         self.master_password_reprompt != crate::api::CipherRepromptType::None
     }
-}
 
-impl Entry<Decrypted> {
     /// The "short" is the first field that comes to mind when speaking of a entry, like the
     /// password for the Login , the number for the Card, etc.
     pub fn get_short(&self) -> Option<String> {
@@ -436,11 +425,11 @@ impl Entry<Decrypted> {
     }
 }
 
-pub trait Decrypter<T> {
-    fn decrypt_field(&mut self, entry: Option<&Entry<T>>, field: &str) -> Result<String>;
+pub trait Decrypter {
+    fn decrypt_field(&mut self, entry: Option<&Entry>, field: &str) -> Result<String>;
     fn decrypt_optfield(
         &mut self,
-        entry: Option<&Entry<T>>,
+        entry: Option<&Entry>,
         field: &Option<&str>,
     ) -> Result<Option<String>> {
         Ok(match field {
@@ -450,11 +439,11 @@ pub trait Decrypter<T> {
     }
 }
 
-pub trait Encrypter<T> {
-    fn encrypt_field(&mut self, entry: Option<&Entry<T>>, field: &str) -> Result<String>;
+pub trait Encrypter {
+    fn encrypt_field(&mut self, entry: Option<&Entry>, field: &str) -> Result<String>;
     fn encrypt_optfield(
         &mut self,
-        entry: Option<&Entry<T>>,
+        entry: Option<&Entry>,
         field: &Option<&str>,
     ) -> Result<Option<String>> {
         Ok(match field {
@@ -464,36 +453,34 @@ pub trait Encrypter<T> {
     }
 }
 
-impl<T> Entry<T> {
-    pub fn encrypt_string(&self, s: &str, encrypter: &mut impl Encrypter<T>) -> Result<String> {
+impl Entry {
+    pub fn encrypt_string(&self, s: &str, encrypter: &mut impl Encrypter) -> Result<String> {
         encrypter.encrypt_field(Some(self), s)
     }
 
     pub fn encrypt_optstring(
         &self,
         optstring: &Option<String>,
-        encrypter: &mut impl Encrypter<T>,
+        encrypter: &mut impl Encrypter,
     ) -> Result<Option<String>> {
         encrypter.encrypt_optfield(Some(self), &optstring.as_deref())
     }
 
-    pub fn decrypt_string(&self, s: &str, decrypter: &mut impl Decrypter<T>) -> Result<String> {
+    pub fn decrypt_string(&self, s: &str, decrypter: &mut impl Decrypter) -> Result<String> {
         decrypter.decrypt_field(Some(self), s)
     }
 
     pub fn decrypt_optstring(
         &self,
         optstring: &Option<String>,
-        decrypter: &mut impl Decrypter<T>,
+        decrypter: &mut impl Decrypter,
     ) -> Result<Option<String>> {
         decrypter.decrypt_optfield(Some(self), &optstring.as_deref())
     }
-}
 
-impl Entry<Encrypted> {
     pub fn decrypt_custom_fields(
         &self,
-        decrypter: &mut impl Decrypter<Encrypted>,
+        decrypter: &mut impl Decrypter,
     ) -> Result<Vec<DynamicField>> {
         self.fields
             .iter()
@@ -502,13 +489,13 @@ impl Entry<Encrypted> {
                     name: self.decrypt_optstring(&field.name, decrypter)?,
                     value: self.decrypt_optstring(&field.value, decrypter)?,
                     ty: field.ty,
-                    linked_id: None, // TODO: Check if None here is correct
+                    linked_id: field.linked_id,
                 })
             })
             .collect()
     }
 
-    pub fn decrypt_uris(&self, decrypter: &mut impl Decrypter<Encrypted>) -> Result<Vec<Uri>> {
+    pub fn decrypt_uris(&self, decrypter: &mut impl Decrypter) -> Result<Vec<Uri>> {
         match &self.data {
             EntryData::Login { uris, .. } => Ok(uris
                 .iter()
@@ -523,10 +510,7 @@ impl Entry<Encrypted> {
         }
     }
 
-    pub fn decrypt_history(
-        &self,
-        decrypter: &mut impl Decrypter<Encrypted>,
-    ) -> Result<Vec<HistoryEntry>> {
+    pub fn decrypt_history(&self, decrypter: &mut impl Decrypter) -> Result<Vec<HistoryEntry>> {
         self.history
             .iter()
             .map(|he| {
@@ -538,7 +522,7 @@ impl Entry<Encrypted> {
             .collect::<Result<_>>()
     }
 
-    pub fn decrypt(&self, decrypter: &mut impl Decrypter<Encrypted>) -> Result<Entry<Decrypted>> {
+    pub fn _decrypt(&self, decrypter: &mut impl Decrypter) -> Result<Entry> {
         // folder name should always be decrypted with the local key because
         // folders are local to a specific user's vault, not the organization
         let folder = self.decrypt_optstring(&self.folder, decrypter)?;
@@ -638,7 +622,7 @@ impl Entry<Encrypted> {
             },
         };
 
-        Ok(Entry::<Decrypted> {
+        Ok(Entry {
             id: self.id.clone(),
             folder,
             folder_id: self.folder_id.clone(),
@@ -649,9 +633,206 @@ impl Entry<Encrypted> {
             fields,
             notes,
             history,
-            master_password_reprompt: crate::api::CipherRepromptType::None,
-            _state: std::marker::PhantomData,
+            master_password_reprompt: self.master_password_reprompt,
         })
+    }
+
+    /// Decrypt only non-sensitive fields, leaving passwords, card numbers, TOTP
+    /// secrets, SSH private keys, identity SSN/passport/license, and history
+    /// as encrypted cipherstrings (not None).
+    pub fn decrypt_non_sensitive(&self, decrypter: &mut impl Decrypter) -> Result<Entry> {
+        let folder = self.decrypt_optstring(&self.folder, decrypter)?;
+        let notes = self.decrypt_optstring(&self.notes, decrypter)?;
+
+        let fields: Vec<DynamicField> = self
+            .fields
+            .iter()
+            .map(|field| {
+                Ok(DynamicField {
+                    name: self.decrypt_optstring(&field.name, decrypter)?,
+                    value: self.decrypt_optstring(&field.value, decrypter)?,
+                    ty: field.ty,
+                    linked_id: field.linked_id,
+                })
+            })
+            .collect::<Result<_>>()?;
+
+        let data = match &self.data {
+            EntryData::Login {
+                username,
+                password,
+                totp,
+                uris,
+            } => EntryData::Login {
+                username: self.decrypt_optstring(username, decrypter)?,
+                password: password.clone(),
+                totp: totp.clone(),
+                uris: uris
+                    .iter()
+                    .map(|s| {
+                        Ok(Uri {
+                            uri: decrypter.decrypt_field(Some(self), &s.uri)?,
+                            match_type: s.match_type,
+                        })
+                    })
+                    .collect::<Result<Vec<Uri>>>()?,
+            },
+            EntryData::Card {
+                cardholder_name,
+                number,
+                brand,
+                exp_month,
+                exp_year,
+                code,
+            } => EntryData::Card {
+                cardholder_name: self.decrypt_optstring(cardholder_name, decrypter)?,
+                number: number.clone(),
+                brand: self.decrypt_optstring(brand, decrypter)?,
+                exp_month: self.decrypt_optstring(exp_month, decrypter)?,
+                exp_year: self.decrypt_optstring(exp_year, decrypter)?,
+                code: code.clone(),
+            },
+            EntryData::Identity {
+                title,
+                first_name,
+                middle_name,
+                last_name,
+                address1,
+                address2,
+                address3,
+                city,
+                state,
+                postal_code,
+                country,
+                phone,
+                email,
+                ssn,
+                license_number,
+                passport_number,
+                username,
+            } => EntryData::Identity {
+                title: self.decrypt_optstring(title, decrypter)?,
+                first_name: self.decrypt_optstring(first_name, decrypter)?,
+                middle_name: self.decrypt_optstring(middle_name, decrypter)?,
+                last_name: self.decrypt_optstring(last_name, decrypter)?,
+                address1: self.decrypt_optstring(address1, decrypter)?,
+                address2: self.decrypt_optstring(address2, decrypter)?,
+                address3: self.decrypt_optstring(address3, decrypter)?,
+                city: self.decrypt_optstring(city, decrypter)?,
+                state: self.decrypt_optstring(state, decrypter)?,
+                postal_code: self.decrypt_optstring(postal_code, decrypter)?,
+                country: self.decrypt_optstring(country, decrypter)?,
+                phone: self.decrypt_optstring(phone, decrypter)?,
+                email: self.decrypt_optstring(email, decrypter)?,
+                ssn: ssn.clone(),
+                license_number: license_number.clone(),
+                passport_number: passport_number.clone(),
+                username: self.decrypt_optstring(username, decrypter)?,
+            },
+            EntryData::SecureNote => EntryData::SecureNote {},
+            EntryData::SshKey {
+                public_key,
+                fingerprint,
+                private_key,
+            } => EntryData::SshKey {
+                public_key: self.decrypt_optstring(public_key, decrypter)?,
+                fingerprint: self.decrypt_optstring(fingerprint, decrypter)?,
+                private_key: private_key.clone(),
+            },
+        };
+
+        Ok(Entry {
+            id: self.id.clone(),
+            folder,
+            folder_id: self.folder_id.clone(),
+            org_id: self.org_id.clone(),
+            key: self.key.clone(),
+            name: decrypter.decrypt_field(Some(self), &self.name)?,
+            data,
+            fields,
+            notes,
+            history: self.history.clone(),
+            master_password_reprompt: self.master_password_reprompt,
+        })
+    }
+
+    /// Fill in the sensitive fields that are encrypted cipherstrings in this
+    /// partially decrypted entry by decrypting them in-place. Also decrypts history.
+    /// `self` should be a partially decrypted entry (from decrypt_non_sensitive),
+    /// where sensitive fields are still encrypted cipherstrings.
+    pub fn fill_sensitive_fields(&mut self, decrypter: &mut impl Decrypter) -> Result<()> {
+        self.history = self.decrypt_history(decrypter)?;
+
+        let encrypted_password = match &self.data {
+            EntryData::Login { password, .. } => password.clone(),
+            _ => None,
+        };
+        let encrypted_totp = match &self.data {
+            EntryData::Login { totp, .. } => totp.clone(),
+            _ => None,
+        };
+        let encrypted_number = match &self.data {
+            EntryData::Card { number, .. } => number.clone(),
+            _ => None,
+        };
+        let encrypted_code = match &self.data {
+            EntryData::Card { code, .. } => code.clone(),
+            _ => None,
+        };
+        let encrypted_ssn = match &self.data {
+            EntryData::Identity { ssn, .. } => ssn.clone(),
+            _ => None,
+        };
+        let encrypted_license = match &self.data {
+            EntryData::Identity { license_number, .. } => license_number.clone(),
+            _ => None,
+        };
+        let encrypted_passport = match &self.data {
+            EntryData::Identity {
+                passport_number, ..
+            } => passport_number.clone(),
+            _ => None,
+        };
+        let encrypted_private_key = match &self.data {
+            EntryData::SshKey { private_key, .. } => private_key.clone(),
+            _ => None,
+        };
+
+        let decrypted_password = self.decrypt_optstring(&encrypted_password, decrypter)?;
+        let decrypted_totp = self.decrypt_optstring(&encrypted_totp, decrypter)?;
+        let decrypted_number = self.decrypt_optstring(&encrypted_number, decrypter)?;
+        let decrypted_code = self.decrypt_optstring(&encrypted_code, decrypter)?;
+        let decrypted_ssn = self.decrypt_optstring(&encrypted_ssn, decrypter)?;
+        let decrypted_license = self.decrypt_optstring(&encrypted_license, decrypter)?;
+        let decrypted_passport = self.decrypt_optstring(&encrypted_passport, decrypter)?;
+        let decrypted_private_key = self.decrypt_optstring(&encrypted_private_key, decrypter)?;
+
+        match &mut self.data {
+            EntryData::Login { password, totp, .. } => {
+                *password = decrypted_password;
+                *totp = decrypted_totp;
+            }
+            EntryData::Card { number, code, .. } => {
+                *number = decrypted_number;
+                *code = decrypted_code;
+            }
+            EntryData::Identity {
+                ssn,
+                license_number,
+                passport_number,
+                ..
+            } => {
+                *ssn = decrypted_ssn;
+                *license_number = decrypted_license;
+                *passport_number = decrypted_passport;
+            }
+            EntryData::SshKey { private_key, .. } => {
+                *private_key = decrypted_private_key;
+            }
+            EntryData::SecureNote => {}
+        }
+
+        Ok(())
     }
 }
 
@@ -672,7 +853,7 @@ fn writefield(
 /// Display impl is a bit messy as we need to support previous output format.
 /// I would, for example, yank this displayed bool and always print Notes after ---.
 /// I would avoid printing the "short" field this way too, but rather print it as a normal field.
-impl Display for Entry<Decrypted> {
+impl Display for Entry {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if let Some(short) = self.get_short() {
             writeln!(f, "{short}")?;
@@ -876,7 +1057,7 @@ pub struct Db {
     pub protected_org_keys: HashMap<String, String>,
 
     // TODO: This could be a HashMap?
-    pub entries: Vec<Entry<Encrypted>>,
+    pub entries: Vec<Entry>,
 }
 
 impl Db {

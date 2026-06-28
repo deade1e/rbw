@@ -5,7 +5,7 @@
 use std::{fmt::Display, str::FromStr};
 
 use crate::{
-    db::{Encrypted, Entry, EntryData},
+    db::{Entry, EntryData},
     prelude::*,
 };
 
@@ -863,34 +863,8 @@ struct SyncResCipher {
     reprompt: CipherRepromptType,
 }
 
-// impl From<Entry<Encrypted>> for Cipher {
-//     fn from(value: Entry<Encrypted>) -> Self {
-//         Self {
-//             id: value.id,
-//             folder_id: value.folder_id,
-//             organization_id: value.org_id,
-//             name: value.name,
-//             data: value.data.into(),
-//             notes: value.notes,
-//             password_history: if value.history.is_empty() {
-//                 None
-//             } else {
-//                 Some(value.history.into_iter().map(|he| he.into()).collect())
-//             },
-//             fields: if value.fields.is_empty() {
-//                 None
-//             } else {
-//                 Some(value.fields.into_iter().map(|f| f.into()).collect())
-//             },
-//             deleted_date: None,
-//             key: value.key,
-//             reprompt: value.master_password_reprompt,
-//         }
-//     }
-// }
-
 impl SyncResCipher {
-    fn into_entry(self, folders: &[SyncResFolder]) -> Result<crate::db::Entry<Encrypted>> {
+    fn into_entry(self, folders: &[SyncResFolder]) -> Result<crate::db::Entry> {
         if self.deleted_date.is_some() {
             return Err(Error::DeletedEntry);
         }
@@ -913,7 +887,7 @@ impl SyncResCipher {
             fields.into_iter().map(Into::into).collect()
         });
 
-        Ok(crate::db::Entry::<Encrypted> {
+        Ok(crate::db::Entry {
             id: self.id,
             org_id: self.organization_id,
             folder,
@@ -925,7 +899,6 @@ impl SyncResCipher {
             history,
             key: self.key,
             master_password_reprompt: self.reprompt,
-            _state: std::marker::PhantomData,
         })
     }
 }
@@ -1019,8 +992,8 @@ struct CiphersPutReq {
     password_history: Vec<CipherHistoryEntry>,
 }
 
-impl From<Entry<Encrypted>> for CiphersPutReq {
-    fn from(value: Entry<Encrypted>) -> Self {
+impl From<Entry> for CiphersPutReq {
+    fn from(value: Entry) -> Self {
         Self {
             ty: entry_data_type(&value.data),
             folder_id: value.folder_id,

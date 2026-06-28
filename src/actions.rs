@@ -1,7 +1,4 @@
-use crate::{
-    db::{Encrypted, Entry},
-    prelude::*,
-};
+use crate::{db::Entry, prelude::*};
 
 pub async fn register(email: &str, apikey: crate::locked::ApiKey) -> Result<()> {
     let (client, config) = api_client_async().await?;
@@ -121,7 +118,7 @@ pub async fn sync(
         String,
         String,
         std::collections::HashMap<String, String>,
-        Vec<crate::db::Entry<Encrypted>>,
+        Vec<crate::db::Entry>,
     ),
 )> {
     with_exchange_refresh_token_async(access_token, refresh_token, |token| async move {
@@ -136,7 +133,7 @@ async fn sync_once(
     String,
     String,
     std::collections::HashMap<String, String>,
-    Vec<crate::db::Entry<Encrypted>>,
+    Vec<crate::db::Entry>,
 )> {
     let (client, _) = api_client_async().await?;
     client.sync(access_token).await
@@ -170,7 +167,7 @@ async fn add_once(
     Ok(())
 }
 
-async fn edit_once(access_token: &str, entry: &crate::db::Entry<Encrypted>) -> Result<()> {
+async fn edit_once(access_token: &str, entry: &crate::db::Entry) -> Result<()> {
     let (client, _) = api_client_async().await?;
     client.edit(access_token, entry).await
 }
@@ -178,7 +175,7 @@ async fn edit_once(access_token: &str, entry: &crate::db::Entry<Encrypted>) -> R
 pub async fn edit(
     access_token: &str,
     refresh_token: &str,
-    entry: &Entry<Encrypted>,
+    entry: &Entry,
 ) -> Result<(Option<String>, ())> {
     with_exchange_refresh_token_async(access_token, refresh_token, |token| async move {
         edit_once(&token, entry).await

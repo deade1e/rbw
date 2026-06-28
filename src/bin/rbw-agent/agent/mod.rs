@@ -1,15 +1,10 @@
-use std::{
-    collections::{HashMap, HashSet},
-    sync::{atomic::AtomicBool, Arc},
-    time::Duration,
-};
+use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use anyhow::Context as _;
 use rbw::{
     db::Db,
     error::{Error, Result},
 };
-use sha2::Digest as _;
 use tokio::{
     net::{UnixListener, UnixStream},
     sync::{Mutex, Notify, RwLock, RwLockReadGuard, RwLockWriteGuard},
@@ -28,10 +23,9 @@ struct InnerAgent {
     pub lock_deadline: Mutex<Option<Instant>>,
     pub sync_deadline: Mutex<Option<Instant>>,
     pub run_notify: Notify,
-    pub master_password_reprompt: RwLock<HashSet<[u8; 32]>>,
-    master_password_reprompt_initialized: AtomicBool,
     config: rbw::config::Config,
     pub db: RwLock<Db>,
+    pub decrypted_entries: RwLock<Option<Vec<rbw::db::Entry>>>,
 
     // this is stored here specifically for the use of the ssh agent, because
     // requests made to the ssh agent don't include an environment, and so we
@@ -81,10 +75,9 @@ impl Agent {
                 lock_deadline: Mutex::new(None),
                 sync_deadline: Mutex::new(sync_deadline),
                 run_notify: Notify::new(),
-                master_password_reprompt: RwLock::new(std::collections::HashSet::new()),
-                master_password_reprompt_initialized: AtomicBool::new(false),
                 config,
                 db: RwLock::new(db),
+                decrypted_entries: RwLock::new(None),
                 last_environment: RwLock::new(rbw::protocol::Environment::default()),
 
                 #[cfg(feature = "clipboard")]
@@ -99,19 +92,6 @@ impl Agent {
         };
 
         state
-    }
-
-    pub async fn key(&self, org_id: Option<&str>) -> Option<Arc<rbw::locked::Keys>> {
-        match org_id {
-            Some(id) => self
-                .inner
-                .org_keys
-                .read()
-                .await
-                .as_ref()
-                .and_then(|h| h.get(id).cloned()),
-            None => self.inner.priv_key.read().await.clone(),
-        }
     }
 
     pub async fn set_keys(
@@ -154,9 +134,11 @@ impl Agent {
         {
             let mut priv_key_guard = self.inner.priv_key.write().await;
             let mut org_keys_guard = self.inner.org_keys.write().await;
+            let mut decrypted_entries_guard = self.inner.decrypted_entries.write().await;
 
             *priv_key_guard = None;
             *org_keys_guard = None;
+            *decrypted_entries_guard = None;
         }
 
         *self.inner.lock_deadline.lock().await = None;
@@ -168,98 +150,6 @@ impl Agent {
         // self.inner
         //     .sync_timeout
         //     .set(self.inner.sync_timeout_duration);
-    }
-
-    // the way we structure the client/agent split in rbw makes the master
-    // password reprompt feature a bit complicated to implement - it would be
-    // a lot easier to just have the client do the prompting, but that would
-    // leave it open to someone reading the cipherstring from the local
-    // database and passing it to the agent directly, bypassing the client.
-    // the agent is the thing that holds the unlocked secrets, so it also
-    // needs to be the thing guarding access to master password reprompt
-    // entries. we only pass individual cipherstrings to the agent though, so
-    // the agent needs to be able to recognize the cipherstrings that need
-    // reprompting, without the additional context of the entry they came
-    // from. in addition, because the reprompt state is stored in the sync db
-    // in plaintext, we can't just read it from the db directly, because
-    // someone could just edit the file on disk before making the request.
-    //
-    // therefore, the solution we choose here is to keep an in-memory set of
-    // cipherstrings that we know correspond to entries with master password
-    // reprompt enabled. this set is only updated when the agent itself does
-    // a sync, so it can't be bypassed by editing the on-disk file directly.
-    // if the agent gets a request for any of those cipherstrings that it saw
-    // marked as master password reprompt during the most recent sync, it
-    // forces a reprompt.
-
-    async fn add_mpr(&self, s: Option<&str>) {
-        if let Some(s) = s {
-            if !s.is_empty() {
-                let mut hasher = sha2::Sha256::new();
-                hasher.update(s);
-                self.inner
-                    .master_password_reprompt
-                    .write()
-                    .await
-                    .insert(hasher.finalize().into());
-            }
-        }
-    }
-
-    pub async fn initialize_mpr(&self) {
-        if !self.master_password_reprompt_initialized() {
-            self.set_master_password_reprompt(&self.inner.db.read().await.entries)
-                .await;
-        }
-    }
-
-    pub async fn set_master_password_reprompt<T>(&self, entries: &[rbw::db::Entry<T>]) {
-        self.inner.master_password_reprompt.write().await.clear();
-
-        for entry in entries {
-            if !entry.master_password_reprompt() {
-                continue;
-            }
-
-            match &entry.data {
-                rbw::db::EntryData::Login { password, totp, .. } => {
-                    self.add_mpr(password.as_deref()).await;
-                    self.add_mpr(totp.as_deref()).await;
-                }
-                rbw::db::EntryData::Card { number, code, .. } => {
-                    self.add_mpr(number.as_deref()).await;
-                    self.add_mpr(code.as_deref()).await;
-                }
-                rbw::db::EntryData::Identity {
-                    ssn,
-                    passport_number,
-                    ..
-                } => {
-                    self.add_mpr(ssn.as_deref()).await;
-                    self.add_mpr(passport_number.as_deref()).await;
-                }
-                rbw::db::EntryData::SecureNote => {}
-                rbw::db::EntryData::SshKey { private_key, .. } => {
-                    self.add_mpr(private_key.as_deref()).await;
-                }
-            }
-
-            for field in &entry.fields {
-                if field.ty == Some(rbw::api::FieldType::Hidden) {
-                    self.add_mpr(field.value.as_deref()).await;
-                }
-            }
-        }
-
-        self.inner
-            .master_password_reprompt_initialized
-            .store(true, std::sync::atomic::Ordering::Relaxed);
-    }
-
-    pub fn master_password_reprompt_initialized(&self) -> bool {
-        self.inner
-            .master_password_reprompt_initialized
-            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     pub async fn last_environment(
@@ -412,11 +302,7 @@ impl Agent {
 
         let (action, environment) = req.into_parts();
 
-        if !matches!(action, rbw::protocol::Action::Decrypt { .. })
-            && !matches!(action, rbw::protocol::Action::Encrypt { .. })
-        {
-            log::trace!("Start of action: {:?}", &action);
-        }
+        log::trace!("Start of action: {:?}", &action);
 
         match &action {
             rbw::protocol::Action::Register => {
@@ -437,24 +323,38 @@ impl Agent {
             rbw::protocol::Action::Sync => {
                 self.sync(Some(sock)).await?;
             }
-            // TODO: This alone does not do much, as it's a simple oracle open for everybody, to
-            // decrypt stuff.
-            rbw::protocol::Action::Decrypt {
-                cipherstring,
-                entry_key,
-                org_id,
+            rbw::protocol::Action::Get(find) => {
+                self.get(sock, &environment, find).await?;
+            }
+            rbw::protocol::Action::Search { term, folder } => {
+                self.search(sock, &environment, term, folder.as_deref())
+                    .await?;
+            }
+            rbw::protocol::Action::Code(find) => {
+                self.code(sock, &environment, find).await?;
+            }
+            rbw::protocol::Action::Add(add) => {
+                self.add(sock, &environment, add).await?;
+            }
+            rbw::protocol::Action::Edit {
+                find,
+                password,
+                notes,
             } => {
-                self.decrypt(
+                self.edit(
                     sock,
                     &environment,
-                    cipherstring,
-                    entry_key.as_deref(),
-                    org_id.as_deref(),
+                    find,
+                    password.as_deref(),
+                    notes.as_deref(),
                 )
                 .await?;
             }
-            rbw::protocol::Action::Encrypt { plaintext, org_id } => {
-                self.encrypt(sock, plaintext, org_id.as_deref()).await?;
+            rbw::protocol::Action::Remove(find) => {
+                self.remove(sock, &environment, find).await?;
+            }
+            rbw::protocol::Action::History(find) => {
+                self.history(sock, &environment, find).await?;
             }
             rbw::protocol::Action::ClipboardStore { text } => {
                 self.clipboard_store(sock, text).await?;
@@ -469,11 +369,7 @@ impl Agent {
             }
         }
 
-        if !matches!(action, rbw::protocol::Action::Decrypt { .. })
-            && !matches!(action, rbw::protocol::Action::Encrypt { .. })
-        {
-            log::trace!("End of action: {:?}", &action);
-        }
+        log::trace!("End of action: {:?}", &action);
 
         self.set_last_environment(environment).await;
 
@@ -482,8 +378,13 @@ impl Agent {
             rbw::protocol::Action::Register
             | rbw::protocol::Action::Login
             | rbw::protocol::Action::Unlock
-            | rbw::protocol::Action::Decrypt { .. }
-            | rbw::protocol::Action::Encrypt { .. }
+            | rbw::protocol::Action::Get(_)
+            | rbw::protocol::Action::Search { .. }
+            | rbw::protocol::Action::Code(_)
+            | rbw::protocol::Action::Add(_)
+            | rbw::protocol::Action::Edit { .. }
+            | rbw::protocol::Action::Remove(_)
+            | rbw::protocol::Action::History(_)
             | rbw::protocol::Action::ClipboardStore { .. } => self.reset_lock_timeout().await,
             _ => {}
         }

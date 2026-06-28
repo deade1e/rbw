@@ -15,4 +15,5 @@ mod prelude;
 pub mod protocol;
 pub mod pwgen;
 pub mod search;
+pub mod totp;
 pub mod wordlist;

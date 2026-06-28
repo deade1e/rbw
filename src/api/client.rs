@@ -15,7 +15,7 @@ use crate::{
         ConnectTokenAuth, ConnectTokenReq, ConnectTokenRes, FoldersRes, FoldersResData,
         PreloginRes, SyncRes, TwoFactorProviderType,
     },
-    db::{Encrypted, Entry, EntryData},
+    db::{Entry, EntryData},
     error::{Error, Result},
     json::{DeserializeJsonWithPath as _, DeserializeJsonWithPathAsync as _},
 };
@@ -474,12 +474,7 @@ impl Client {
     pub async fn sync(
         &self,
         access_token: &str,
-    ) -> Result<(
-        String,
-        String,
-        HashMap<String, String>,
-        Vec<Entry<Encrypted>>,
-    )> {
+    ) -> Result<(String, String, HashMap<String, String>, Vec<Entry>)> {
         let res = ClientRequest::Sync(access_token)
             .req(self)
             .await?
@@ -487,7 +482,7 @@ impl Client {
 
         let sync_res: SyncRes = res.json_with_path().await?;
 
-        let ciphers: Vec<Entry<Encrypted>> = sync_res
+        let ciphers: Vec<Entry> = sync_res
             .ciphers
             .into_iter()
             .filter_map(|cipher| match cipher.into_entry(&sync_res.folders) {
@@ -536,7 +531,7 @@ impl Client {
         Ok(())
     }
 
-    pub async fn edit(&self, access_token: &str, entry: &Entry<Encrypted>) -> Result<()> {
+    pub async fn edit(&self, access_token: &str, entry: &Entry) -> Result<()> {
         let req: CiphersPutReq = entry.clone().into();
 
         ClientRequest::Edit(access_token, &entry.id, req)

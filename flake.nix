@@ -9,10 +9,12 @@
     { self, nixpkgs }:
     {
 
-      packages.x86_64-linux.hello = nixpkgs.legacyPackages.x86_64-linux.hello;
+      packages.aarch64-linux.hello = nixpkgs.legacyPackages.aarch64-linux.hello;
 
-      packages.x86_64-linux.default = self.packages.x86_64-linux.hello;
-      devShells.x86_64-linux.default = import ./shell.nix { pkgs = nixpkgs.legacyPackages.x86_64-linux; };
+      packages.aarch64-linux.default = self.packages.aarch64-linux.hello;
+      devShells.aarch64-linux.default = import ./shell.nix {
+        pkgs = nixpkgs.legacyPackages.aarch64-linux;
+      };
 
     };
 }

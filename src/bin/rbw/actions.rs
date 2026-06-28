@@ -74,39 +74,54 @@ pub fn quit() -> anyhow::Result<()> {
     }
 }
 
-pub fn decrypt(
-    cipherstring: &str,
-    entry_key: Option<&str>,
-    org_id: Option<&str>,
-) -> anyhow::Result<String> {
-    let res = complex_action(rbw::protocol::Action::Decrypt {
-        cipherstring: cipherstring.to_string(),
-        entry_key: entry_key.map(std::string::ToString::to_string),
-        org_id: org_id.map(std::string::ToString::to_string),
-    })?;
-
-    match res {
-        rbw::protocol::Response::Decrypt { plaintext } => Ok(plaintext),
-        rbw::protocol::Response::Error { error } => {
-            Err(anyhow::anyhow!("failed to decrypt: {error}"))
-        }
-        _ => Err(anyhow::anyhow!("unexpected message: {res:?}")),
-    }
+pub fn get(find: rbw::protocol::FindArgs) -> anyhow::Result<rbw::protocol::Response> {
+    complex_action(rbw::protocol::Action::Get(find))
 }
 
-pub fn encrypt(plaintext: &str, org_id: Option<&str>) -> anyhow::Result<String> {
-    let res = complex_action(rbw::protocol::Action::Encrypt {
-        plaintext: plaintext.to_string(),
-        org_id: org_id.map(std::string::ToString::to_string),
-    })?;
+pub fn search(term: String, folder: Option<String>) -> anyhow::Result<rbw::protocol::Response> {
+    complex_action(rbw::protocol::Action::Search { term, folder })
+}
 
-    match res {
-        rbw::protocol::Response::Encrypt { cipherstring } => Ok(cipherstring),
-        rbw::protocol::Response::Error { error } => {
-            Err(anyhow::anyhow!("failed to encrypt: {error}"))
-        }
-        _ => Err(anyhow::anyhow!("unexpected message: {res:?}")),
-    }
+pub fn code(find: rbw::protocol::FindArgs) -> anyhow::Result<rbw::protocol::Response> {
+    complex_action(rbw::protocol::Action::Code(find))
+}
+
+pub fn add(
+    name: String,
+    username: Option<String>,
+    uris: Vec<(String, Option<rbw::api::UriMatchType>)>,
+    folder: Option<String>,
+    password: Option<String>,
+    notes: Option<String>,
+) -> anyhow::Result<()> {
+    simple_action(rbw::protocol::Action::Add(rbw::protocol::AddEntry {
+        name,
+        username,
+        uris,
+        folder,
+        password,
+        notes,
+    }))
+}
+
+pub fn edit(
+    find: rbw::protocol::FindArgs,
+    password: Option<String>,
+    notes: Option<String>,
+) -> anyhow::Result<()> {
+    simple_action(rbw::protocol::Action::Edit {
+        find,
+        password,
+        notes,
+    })
+}
+
+pub fn remove(find: rbw::protocol::FindArgs) -> anyhow::Result<()> {
+    simple_action(rbw::protocol::Action::Remove(find))
+}
+
+pub fn history(find: rbw::protocol::FindArgs) -> anyhow::Result<rbw::protocol::Response> {
+    complex_action(rbw::protocol::Action::History(find))
 }
 
 pub fn clipboard_store(text: &str) -> anyhow::Result<()> {
