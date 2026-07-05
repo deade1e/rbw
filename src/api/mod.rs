@@ -348,6 +348,7 @@ struct ConnectErrorResErrorModel {
 #[derive(Deserialize, Debug)]
 struct ConnectRefreshTokenRes {
     access_token: String,
+    refresh_token: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]

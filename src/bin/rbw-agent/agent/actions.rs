@@ -341,10 +341,13 @@ impl Agent {
 
         log::trace!("Obtained access and refresh tokens");
 
-        let (access_token, (protected_key, protected_private_key, protected_org_keys, entries)) =
-            rbw::actions::sync(access_token, refresh_token)
-                .await
-                .context("failed to sync database from server")?;
+        let (
+            access_token,
+            refresh_token_new,
+            (protected_key, protected_private_key, protected_org_keys, entries),
+        ) = rbw::actions::sync(access_token, refresh_token)
+            .await
+            .context("failed to sync database from server")?;
 
         log::trace!("Sync operation finished");
 
@@ -359,6 +362,7 @@ impl Agent {
             log::trace!("Opened cached db for write operation");
 
             db.update_access_token(access_token);
+            db.update_refresh_token(refresh_token_new);
 
             db.protected_key = Some(protected_key);
             db.protected_private_key = Some(protected_private_key);

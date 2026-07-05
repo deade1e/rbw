@@ -117,6 +117,7 @@ pub async fn sync(
     refresh_token: &str,
 ) -> Result<(
     Option<String>,
+    Option<String>,
     (
         String,
         String,
@@ -149,7 +150,7 @@ pub async fn add(
     data: &crate::db::EntryData,
     notes: Option<&str>,
     folder_id: Option<&str>,
-) -> Result<(Option<String>, ())> {
+) -> Result<(Option<String>, Option<String>, ())> {
     with_exchange_refresh_token_async(access_token, refresh_token, |token| async move {
         add_once(&token, name, data, notes, folder_id).await
     })
@@ -179,7 +180,7 @@ pub async fn edit(
     access_token: &str,
     refresh_token: &str,
     entry: &Entry<Encrypted>,
-) -> Result<(Option<String>, ())> {
+) -> Result<(Option<String>, Option<String>, ())> {
     with_exchange_refresh_token_async(access_token, refresh_token, |token| async move {
         edit_once(&token, entry).await
     })
@@ -190,7 +191,7 @@ pub async fn remove(
     access_token: &str,
     refresh_token: &str,
     id: &str,
-) -> Result<(Option<String>, ())> {
+) -> Result<(Option<String>, Option<String>, ())> {
     with_exchange_refresh_token_async(access_token, refresh_token, |token| async move {
         remove_once(&token, id).await
     })
@@ -206,7 +207,7 @@ async fn remove_once(access_token: &str, id: &str) -> Result<()> {
 pub async fn list_folders(
     access_token: &str,
     refresh_token: &str,
-) -> Result<(Option<String>, Vec<(String, String)>)> {
+) -> Result<(Option<String>, Option<String>, Vec<(String, String)>)> {
     with_exchange_refresh_token_async(access_token, refresh_token, |token| async move {
         list_folders_once(&token).await
     })
@@ -222,7 +223,7 @@ pub async fn create_folder(
     access_token: &str,
     refresh_token: &str,
     name: &str,
-) -> Result<(Option<String>, String)> {
+) -> Result<(Option<String>, Option<String>, String)> {
     with_exchange_refresh_token_async(access_token, refresh_token, |token| async move {
         create_folder_once(&token, name).await
     })
@@ -238,23 +239,24 @@ async fn with_exchange_refresh_token_async<F, Fut, T>(
     access_token: &str,
     refresh_token: &str,
     mut f: F,
-) -> Result<(Option<String>, T)>
+) -> Result<(Option<String>, Option<String>, T)>
 where
     F: FnMut(String) -> Fut,
     Fut: std::future::Future<Output = Result<T>>,
 {
     match f(access_token.to_string()).await {
-        Ok(t) => Ok((None, t)),
+        Ok(t) => Ok((None, None, t)),
         Err(Error::RequestUnauthorized) => {
-            let access_token = exchange_refresh_token_async(refresh_token).await?;
-            let t = f(access_token.clone()).await?;
-            Ok((Some(access_token), t))
+            let (new_access, new_refresh) =
+                exchange_refresh_token_async(refresh_token).await?;
+            let t = f(new_access.clone()).await?;
+            Ok((Some(new_access), new_refresh, t))
         }
         Err(e) => Err(e),
     }
 }
 
-async fn exchange_refresh_token_async(refresh_token: &str) -> Result<String> {
+async fn exchange_refresh_token_async(refresh_token: &str) -> Result<(String, Option<String>)> {
     let (client, _) = api_client_async().await?;
     client.exchange_refresh_token_async(refresh_token).await
 }

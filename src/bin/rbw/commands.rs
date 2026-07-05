@@ -746,13 +746,13 @@ async fn find_or_create_folder(db: &mut rbw::db::Db, folder: &str) -> anyhow::Re
     let enc: &mut dyn Encrypter<()> = &mut RemoteEncrypter {}; // fat ptr trick
     let dec: &mut dyn Decrypter<()> = &mut RemoteDecrypter {};
 
-    let (new_access_token, folders) = rbw::actions::list_folders(
+    let (new_access_token, new_refresh_token, folders) = rbw::actions::list_folders(
         db.access_token.as_ref().unwrap(),
         db.refresh_token.as_ref().unwrap(),
     )
     .await?;
 
-    update_token(db, new_access_token).await?;
+    update_token(db, new_access_token, new_refresh_token).await?;
 
     let folders: Vec<(String, String)> = folders
         .into_iter()
@@ -766,14 +766,14 @@ async fn find_or_create_folder(db: &mut rbw::db::Db, folder: &str) -> anyhow::Re
     let folder_id = if let Some(folder_id) = folder_id {
         folder_id
     } else {
-        let (new_access_token, id) = rbw::actions::create_folder(
+        let (new_access_token, new_refresh_token, id) = rbw::actions::create_folder(
             db.access_token.as_ref().unwrap(),
             db.refresh_token.as_ref().unwrap(),
             &enc.encrypt_field(None, folder)?,
         )
         .await?;
 
-        update_token(db, new_access_token).await?;
+        update_token(db, new_access_token, new_refresh_token).await?;
 
         id
     };
@@ -801,8 +801,14 @@ fn parse_editor(contents: &str) -> (Option<String>, Option<String>) {
     (password, notes)
 }
 
-async fn update_token(db: &mut rbw::db::Db, new_token: Option<String>) -> anyhow::Result<()> {
-    if db.update_access_token(new_token) {
+async fn update_token(
+    db: &mut rbw::db::Db,
+    new_access_token: Option<String>,
+    new_refresh_token: Option<String>,
+) -> anyhow::Result<()> {
+    let a = db.update_access_token(new_access_token);
+    let b = db.update_refresh_token(new_refresh_token);
+    if a || b {
         save_db(db).await?;
     }
 
@@ -870,7 +876,7 @@ pub async fn add(
         None => None,
     };
 
-    let (new_token, ()) = rbw::actions::add(
+    let (new_token, new_refresh_token, ()) = rbw::actions::add(
         db.access_token.as_ref().unwrap(),
         db.refresh_token.as_ref().unwrap(),
         &name,
@@ -885,7 +891,7 @@ pub async fn add(
     )
     .await?;
 
-    update_token(&mut db, new_token).await?;
+    update_token(&mut db, new_token, new_refresh_token).await?;
 
     crate::actions::sync()
 }
@@ -967,14 +973,14 @@ pub async fn edit(
 
     entry.notes = entry.encrypt_optstring(&dec_notes, &mut enc)?;
 
-    let (new_token, ()) = rbw::actions::edit(
+    let (new_token, new_refresh_token, ()) = rbw::actions::edit(
         db.access_token.as_ref().unwrap(),
         db.refresh_token.as_ref().unwrap(),
         &entry,
     )
     .await?;
 
-    update_token(&mut db, new_token).await?;
+    update_token(&mut db, new_token, new_refresh_token).await?;
 
     crate::actions::sync()
 }
@@ -1000,14 +1006,14 @@ pub async fn remove(
     let entry = find_entry(&db, needle, user.as_deref(), folder.as_deref(), ignorecase)
         .with_context(|| format!("couldn't find entry for '{desc}'"))?;
 
-    let (new_access_token, ()) = rbw::actions::remove(
+    let (new_access_token, new_refresh_token, ()) = rbw::actions::remove(
         db.access_token.as_ref().unwrap(),
         db.refresh_token.as_ref().unwrap(),
         &entry.id,
     )
     .await?;
 
-    update_token(&mut db, new_access_token).await?;
+    update_token(&mut db, new_access_token, new_refresh_token).await?;
 
     crate::actions::sync()
 }

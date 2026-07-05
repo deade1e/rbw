@@ -480,10 +480,17 @@ impl Client {
         HashMap<String, String>,
         Vec<Entry<Encrypted>>,
     )> {
-        let res = ClientRequest::Sync(access_token)
-            .req(self)
-            .await?
-            .error_for_status()?;
+        let res = ClientRequest::Sync(access_token).req(self).await?;
+        let status = res.status();
+        if !status.is_success() {
+            if let Ok(body) = res.text().await {
+                log::warn!("sync request failed with {status}: {body}");
+            }
+            return Err(match status {
+                reqwest::StatusCode::UNAUTHORIZED => Error::RequestUnauthorized,
+                s => Error::RequestFailed { status: s.as_u16() },
+            });
+        }
 
         let sync_res: SyncRes = res.json_with_path().await?;
 
@@ -582,20 +589,28 @@ impl Client {
         Ok(folders_res.id)
     }
 
-    pub async fn exchange_refresh_token(&self, refresh_token: &str) -> Result<String> {
+    pub async fn exchange_refresh_token(
+        &self,
+        refresh_token: &str,
+    ) -> Result<(String, Option<String>)> {
         let res = ClientRequest::ExchangeRefreshToken(refresh_token)
             .req(self)
             .await?;
+        let res = Self::check_connect_token_res(res).await?;
         let connect_res: ConnectRefreshTokenRes = res.json_with_path().await?;
-        Ok(connect_res.access_token)
+        Ok((connect_res.access_token, connect_res.refresh_token))
     }
 
-    pub async fn exchange_refresh_token_async(&self, refresh_token: &str) -> Result<String> {
+    pub async fn exchange_refresh_token_async(
+        &self,
+        refresh_token: &str,
+    ) -> Result<(String, Option<String>)> {
         let res = ClientRequest::ExchangeRefreshToken(refresh_token)
             .req(self)
             .await?;
+        let res = Self::check_connect_token_res(res).await?;
         let connect_res: ConnectRefreshTokenRes = res.json_with_path().await?;
-        Ok(connect_res.access_token)
+        Ok((connect_res.access_token, connect_res.refresh_token))
     }
 
     pub(super) fn api_url(&self, path: &str) -> String {

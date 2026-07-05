@@ -913,6 +913,15 @@ impl Db {
         }
     }
 
+    pub fn update_refresh_token(&mut self, refresh_token: Option<String>) -> bool {
+        if let Some(refresh_token) = refresh_token {
+            self.refresh_token = Some(refresh_token);
+            true
+        } else {
+            false
+        }
+    }
+
     pub fn apply_session_parameters(&mut self, params: &SessionParameters) {
         self.access_token = Some(params.access_token.clone());
         self.refresh_token = Some(params.refresh_token.clone());
